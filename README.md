@@ -1,1 +1,1 @@
-# cse_881_project
+# CSE881 Project
