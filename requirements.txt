@@ -10,3 +10,5 @@ xgboost
 tensorflow==2.20.0
 tensorflow-text==2.20.1
 keras-nlp==0.27.1
+tokenizers
+
