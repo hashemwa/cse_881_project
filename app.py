@@ -142,11 +142,11 @@ def load_model(model_name):
             return None, None, None
         try:
             import keras
-            import keras_nlp
+            import keras_nlp  # noqa: F401 (registers custom layers)
 
             model = keras.models.load_model(path)
-        except Exception:
-            return None, None, "bert_error"
+        except Exception as e:
+            return None, None, f"bert_error:{type(e).__name__}: {e}"
         return model, None, "bert"
 
     if model_name in sklearn_models:
@@ -164,8 +164,8 @@ def load_model(model_name):
 def predict_text(text, model_name):
     """Run inference on user text and return (is_ai, confidence)."""
     model, tfidf, model_type = load_model(model_name)
-    if model_type == "bert_error":
-        return None, "bert_error"
+    if isinstance(model_type, str) and model_type.startswith("bert_error"):
+        return None, model_type
     if model is None:
         return None, None
 
@@ -363,11 +363,9 @@ def page_detector():
             with st.spinner(f"Running {model_choice}..."):
                 is_ai, confidence = predict_text(input_text, model_choice)
 
-            if confidence == "bert_error":
-                st.error(
-                    "TinyBERT requires `tensorflow-text` which is not installed. "
-                    "Use a different model, or run `pip install tensorflow-text`."
-                )
+            if isinstance(confidence, str) and confidence.startswith("bert_error"):
+                detail = confidence.split(":", 1)[1] if ":" in confidence else ""
+                st.error(f"TinyBERT failed to load.\n\n**Error:** {detail}")
             elif is_ai is None:
                 st.error(
                     "Model files not found. Run the notebook and execute the "
