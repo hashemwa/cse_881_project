@@ -23,6 +23,7 @@ ALL_MODELS = [
     "SVM",
     "XGBoost",
     "TinyBERT",
+    "Custom Algorithm",
 ]
 
 # Trained on the combined dataset (jobs + agricultural + social media)
@@ -35,27 +36,28 @@ RESULTS_DF = pd.DataFrame(
             "SVM",
             "XGBoost",
             "TinyBERT",
+            "Custom Algorithm",
         ],
-        "Accuracy": [0.9430, 0.9480, 0.9500, 0.9480, 0.9400, 0.9610],
-        "Precision": [0.95, 0.95, 0.95, 0.95, 0.94, 0.96],
-        "Recall": [0.94, 0.95, 0.95, 0.95, 0.94, 0.96],
-        "F1": [0.94, 0.95, 0.95, 0.95, 0.94, 0.96],
+        "Accuracy": [0.9430, 0.9480, 0.9500, 0.9480, 0.9400, 0.9610, 0.6640],
+        "Precision": [0.95, 0.95, 0.95, 0.95, 0.94, 0.96, 0.74],
+        "Recall": [0.94, 0.95, 0.95, 0.95, 0.94, 0.96, 0.51],
+        "F1": [0.94, 0.95, 0.95, 0.95, 0.94, 0.96, 0.60],
     }
 )
 
 
 # Brand-inspired colors for each text source
 SOURCE_COLORS = {
-    "human": "#64748B",                                   # slate (neutral)
-    "claude": "#D97757",                                  # Anthropic coral
-    "gemini": "#4285F4",                                  # Google blue
-    "chatgpt": "#10A37F",                                 # OpenAI teal
-    "copilot": "#8b5cf6",                                 # Microsoft Copilot violet
-    "perplexity": "#20B8CD",                              # Perplexity teal
-    "openai/gpt-oss-120b": "#10A37F",                     # OpenAI teal
-    "qwen/qwen2.5-7b-instruct": "#F97316",                # Alibaba orange
-    "mistralai/mixtral-8x22b-instruct-v0.1": "#FA520F",   # Mistral orange
-    "meta/llama-3.1-70b-instruct": "#1877F2",             # Meta blue
+    "human": "#64748B",  # slate (neutral)
+    "claude": "#D97757",  # Anthropic coral
+    "gemini": "#4285F4",  # Google blue
+    "chatgpt": "#10A37F",  # OpenAI teal
+    "copilot": "#8b5cf6",  # Microsoft Copilot violet
+    "perplexity": "#20B8CD",  # Perplexity teal
+    "openai/gpt-oss-120b": "#10A37F",  # OpenAI teal
+    "qwen/qwen2.5-7b-instruct": "#F97316",  # Alibaba orange
+    "mistralai/mixtral-8x22b-instruct-v0.1": "#FA520F",  # Mistral orange
+    "meta/llama-3.1-70b-instruct": "#1877F2",  # Meta blue
 }
 
 
@@ -103,6 +105,81 @@ def deep_clean_text(text):
         return " ".join(words)
     except Exception:
         return text
+
+
+@st.cache_resource
+def load_custom_algorithm_data():
+    """Load the pre-trained AI word/bigram/trigram ratio dictionaries."""
+    base = os.path.join(BASE_DIR, "custom algorithm")
+    try:
+        words_df = pd.read_csv(os.path.join(base, "ai_words.csv"))
+        bigrams_df = pd.read_csv(os.path.join(base, "ai_bigrams.csv"))
+        trigrams_df = pd.read_csv(os.path.join(base, "ai_trigrams.csv"))
+    except FileNotFoundError:
+        return None, None, None
+    ai_words = dict(zip(words_df["word"], words_df["ratio"]))
+    ai_bigrams = {
+        tuple(k.split()): v for k, v in zip(bigrams_df["bigram"], bigrams_df["ratio"])
+    }
+    ai_trigrams = {
+        tuple(k.split()): v
+        for k, v in zip(trigrams_df["trigram"], trigrams_df["ratio"])
+    }
+    return ai_words, ai_bigrams, ai_trigrams
+
+
+def _custom_detect(text, ai_words, ai_bigrams, ai_trigrams, threshold=0.2):
+    """Custom AI detection: weighted word/bigram/trigram ratio scoring."""
+    import nltk
+    import string
+    from nltk.corpus import stopwords
+
+    for pkg in ("punkt", "punkt_tab", "stopwords"):
+        try:
+            nltk.data.find(f"tokenizers/{pkg}" if "punkt" in pkg else f"corpora/{pkg}")
+        except LookupError:
+            try:
+                nltk.download(pkg, quiet=True)
+            except Exception:
+                pass
+
+    stop = set(stopwords.words("english"))
+
+    # Word score: remove stopwords + punctuation, look up each word in ai_words
+    lowered = text.lower()
+    tokens = nltk.word_tokenize(lowered)
+    cleaned_words = [
+        w.translate(str.maketrans("", "", string.punctuation))
+        for w in tokens
+        if w not in stop
+    ]
+    cleaned_words = [w for w in cleaned_words if w]
+    word_score = (
+        sum(ai_words.get(w, 0) for w in cleaned_words) / len(cleaned_words)
+        if cleaned_words
+        else 0.0
+    )
+
+    # N-gram scores: alphanumeric tokens, then n-grams
+    alnum_tokens = [w for w in tokens if w.isalnum()]
+    bigrams = list(nltk.ngrams(alnum_tokens, 2))
+    trigrams = list(nltk.ngrams(alnum_tokens, 3))
+    bigram_score = (
+        sum(ai_bigrams.get(bg, 0) for bg in bigrams) / len(bigrams) if bigrams else 0.0
+    )
+    trigram_score = (
+        sum(ai_trigrams.get(tg, 0) for tg in trigrams) / len(trigrams)
+        if trigrams
+        else 0.0
+    )
+
+    score = word_score * 0.5 + bigram_score * 0.3 + trigram_score * 0.2
+    is_ai = score > threshold
+    # Map raw score to a [0.5, 1.0] confidence via logistic centered on threshold
+    z = (score - threshold) * 10
+    prob_ai = 1.0 / (1.0 + np.exp(-z))
+    confidence = float(prob_ai if is_ai else 1.0 - prob_ai)
+    return bool(is_ai), confidence
 
 
 @st.cache_resource
@@ -163,6 +240,12 @@ def load_model(model_name):
 
 def predict_text(text, model_name):
     """Run inference on user text and return (is_ai, confidence)."""
+    if model_name == "Custom Algorithm":
+        ai_words, ai_bigrams, ai_trigrams = load_custom_algorithm_data()
+        if ai_words is None:
+            return None, None
+        return _custom_detect(text, ai_words, ai_bigrams, ai_trigrams)
+
     model, tfidf, model_type = load_model(model_name)
     if isinstance(model_type, str) and model_type.startswith("bert_error"):
         return None, model_type
@@ -266,15 +349,21 @@ def page_home():
     st.caption("Four-stage pipeline from raw data to live predictions.")
 
     steps = [
-        ("Collect", "Scrape real postings from Indeed, Care Farming Network, and Reddit."),
-        ("Generate", "Synthesize AI text via Claude, ChatGPT, Gemini, Copilot, and more."),
+        (
+            "Collect",
+            "Scrape real postings from Indeed, Care Farming Network, and Reddit.",
+        ),
+        (
+            "Generate",
+            "Synthesize AI text via Claude, ChatGPT, Gemini, Copilot, and more.",
+        ),
         ("Preprocess", "Clean, normalize, and extract TF-IDF features with NLTK."),
         ("Classify", "Train 6 models and run real-time predictions in this app."),
     ]
     cols = st.columns(4, gap="large")
     for i, (col, (title, desc)) in enumerate(zip(cols, steps)):
         with col:
-            st.caption(f"STEP {i+1:02d}")
+            st.caption(f"STEP {i + 1:02d}")
             st.markdown(f"##### {title}")
             st.caption(desc)
 
@@ -284,9 +373,21 @@ def page_home():
     st.caption("Three distinct domains, combined into a single training set.")
 
     datasets = [
-        ("Job Postings", "3,000", "Indeed (human) + Claude, ChatGPT, Copilot, Gemini, Perplexity (AI)"),
-        ("Agricultural Listings", "790", "Care Farming Network (human) + 4 NVIDIA NIM models (AI)"),
-        ("Social Media Posts", "1,206", "Reddit (human) + ChatGPT, Claude, Gemini (AI)"),
+        (
+            "Job Postings",
+            "3,000",
+            "Indeed (human) + Claude, ChatGPT, Copilot, Gemini, Perplexity (AI)",
+        ),
+        (
+            "Agricultural Listings",
+            "790",
+            "Care Farming Network (human) + 4 NVIDIA NIM models (AI)",
+        ),
+        (
+            "Social Media Posts",
+            "1,206",
+            "Reddit (human) + ChatGPT, Claude, Gemini (AI)",
+        ),
     ]
     cols = st.columns(3, gap="large")
     for col, (title, count, sources) in zip(cols, datasets):
@@ -303,6 +404,7 @@ MODEL_DESCRIPTIONS = {
     "SVM": "Support vector machine with linear kernel on TF-IDF.",
     "XGBoost": "Gradient boosting on TF-IDF. Strong general-purpose baseline.",
     "TinyBERT": "Fine-tuned transformer (bert_tiny_en_uncased). Highest accuracy at 96.1%.",
+    "Custom Algorithm": "Heuristic scoring from AI-leaning word/bigram/trigram ratios (50/30/20 weighted).",
 }
 
 
@@ -455,6 +557,8 @@ def page_performance():
             var_name="Metric",
             value_name="Score",
         )
+        y_min = max(0.0, chart_df["Score"].min() - 0.05)
+        y_low = 0.85 if y_min >= 0.80 else y_min
         fig = px.bar(
             chart_df,
             x="Model",
@@ -467,7 +571,7 @@ def page_performance():
                 "Recall": "#10b981",
                 "F1": "#f59e0b",
             },
-            range_y=[0.85, 1.0],
+            range_y=[y_low, 1.0],
         )
         fig.update_layout(
             height=480,
@@ -502,6 +606,7 @@ def page_performance():
             "SVM": np.array([[487, 13], [39, 461]]),
             "XGBoost": np.array([[489, 11], [49, 451]]),
             "TinyBERT": np.array([[492, 8], [31, 469]]),
+            "Custom Algorithm": np.array([[411, 89], [247, 253]]),
         }
         labels = ["Human", "AI"]
         cms_to_show = {k: v for k, v in all_cms.items() if k in selected_models}
@@ -629,9 +734,7 @@ def page_data():
     total = len(df)
     n_human = (df["_label"] == "Human").sum()
     n_ai = (df["_label"] == "AI").sum()
-    avg_words = (
-        df[cfg["text_col"]].fillna("").astype(str).str.split().str.len().mean()
-    )
+    avg_words = df[cfg["text_col"]].fillna("").astype(str).str.split().str.len().mean()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Samples", f"{total:,}")
@@ -671,9 +774,7 @@ def page_data():
 
     with col_balance:
         st.subheader("Class Balance")
-        balance_df = pd.DataFrame(
-            {"Label": ["Human", "AI"], "Count": [n_human, n_ai]}
-        )
+        balance_df = pd.DataFrame({"Label": ["Human", "AI"], "Count": [n_human, n_ai]})
         fig_bal = px.pie(
             balance_df,
             values="Count",
@@ -700,9 +801,7 @@ def page_data():
 
     # Text length distribution (Human vs AI)
     st.subheader("Text Length Distribution (Human vs AI)")
-    word_counts = (
-        df[cfg["text_col"]].fillna("").astype(str).str.split().str.len()
-    )
+    word_counts = df[cfg["text_col"]].fillna("").astype(str).str.split().str.len()
     length_df = pd.DataFrame({"Words": word_counts, "Label": df["_label"]})
     fig_len = px.histogram(
         length_df,
@@ -738,7 +837,6 @@ def page_data():
             cfg["schema"], columns=["Field", "Type", "Description"]
         )
         st.dataframe(schema_df, use_container_width=True, hide_index=True)
-
 
 
 # Configure Streamlit App
